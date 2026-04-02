@@ -1,5 +1,7 @@
 # Machine Learning Project: Hanoi House Price Prediction
 
+Vietnamese version: [README.md](README.md)
+
 Project goals:
 - Predict house prices from Hanoi real-estate features.
 - Produce forecasts for future years (for example 2027, 2028).
