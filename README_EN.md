@@ -8,10 +8,8 @@ Project goals:
 
 ## 1. Project Structure
 
-- main.py: Training, evaluation, report export, and chart visualization.
+- main.py: Data preprocessing, model training, and future-year forecasting.
 - data/VN_housing_dataset.csv: Input dataset.
-- reports/train_report.json: Structured evaluation report.
-- reports/train_report.png: Visualization chart.
 
 ## 2. Environment Setup
 
@@ -67,42 +65,12 @@ $$
 ## 4. Run Training + Forecast + Report
 
 ```bash
-python3 main.py --data data/VN_housing_dataset.csv --future-year 2028 --report-out reports/train_report.json --chart-out reports/train_report.png
+python3 main.py --data data/VN_housing_dataset.csv --future-year 2028
 ```
 
-If you only want to save chart files and do not want a pop-up window:
+To improve accuracy, the training pipeline now uses Random Forest Regressor with 5-fold GridSearchCV hyperparameter tuning.
 
-```bash
-python3 main.py --data data/VN_housing_dataset.csv --future-year 2028 --no-show-chart
-```
-
-## 5. Metrics Glossary (Abbreviations)
-
-- MAE: Mean Absolute Error
-Definition: Average absolute difference between predicted and actual values.
-Interpretation: Lower is better.
-Unit: VND in this project.
-
-- RMSE: Root Mean Squared Error
-Definition: Square root of average squared prediction error.
-Interpretation: Lower is better; penalizes large errors more than MAE.
-Unit: VND in this project.
-
-- R2: Coefficient of Determination
-Definition: Fraction of target variance explained by the model.
-Range: Typically $(-\infty, 1]$.
-Interpretation: Closer to 1 is better.
-
-- MAPE: Mean Absolute Percentage Error
-Definition: Average absolute percentage error.
-Interpretation: Lower is better.
-Unit: Percent (%).
-
-Note: If you wrote "RMAE", the common metric name is usually "RMSE".
-
-## 6. Outputs
+## 5. Outputs
 
 After running, you get:
-- Console output with MAE, RMSE, R2, MAPE, and a sample future forecast.
-- JSON report at reports/train_report.json.
-- Chart image at reports/train_report.png.
+- Console output with dataset/feature summary and a sample future forecast.

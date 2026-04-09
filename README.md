@@ -9,10 +9,8 @@ Mục tiêu dự án:
 
 ## 1. Cấu trúc dự án
 
-- `main.py`: Script huấn luyện, đánh giá, xuất báo cáo và biểu đồ.
+- `main.py`: Script tiền xử lý dữ liệu, huấn luyện mô hình và dự đoán năm tương lai.
 - `data/VN_housing_dataset.csv`: Dữ liệu đầu vào.
-- `reports/train_report.json`: Báo cáo đánh giá dạng JSON.
-- `reports/train_report.png`: Biểu đồ trực quan.
 
 ## 2. Cài đặt môi trường
 
@@ -74,29 +72,14 @@ Khuyến nghị tối thiểu 30 dòng dữ liệu để mô hình học ổn đ
 ## 4. Chạy train và dự đoán
 
 ```bash
-python3 main.py --data data/VN_housing_dataset.csv --future-year 2028 --report-out reports/train_report.json --chart-out reports/train_report.png
+python3 main.py --data data/VN_housing_dataset.csv --future-year 2028
 ```
 
 Kết quả in ra màn hình gồm:
-- MAE (VND)
-- RMSE (VND)
-- R2
-- MAPE (%)
-- Giá dự đoán mẫu cho năm tương lai (VND)
+- Số dòng dữ liệu và số feature hợp lệ sau tiền xử lý.
+- Giá dự đoán mẫu cho năm tương lai (VND).
 
-Ngoài ra script sẽ:
-- Lưu báo cáo JSON tại `reports/train_report.json`
-- Lưu biểu đồ tại `reports/train_report.png`
-- Mở cửa sổ biểu đồ trên màn hình (mặc định)
-
-Nếu chỉ muốn lưu file mà không mở cửa sổ biểu đồ:
-
-```bash
-python3 main.py --data data/VN_housing_dataset.csv --future-year 2028 --no-show-chart
-```
+Để tăng độ chính xác, mô hình dùng Random Forest Regressor và tự chọn bộ tham số tốt nhất bằng 5-fold cross-validation (GridSearchCV).
 
 ## 5. Mở rộng tiếp theo
 
-- Thêm đặc trưng: hướng nhà, mặt tiền, khoảng cách đến trung tâm, phường, loại nhà.
-- Thử mô hình mạnh hơn: RandomForest, XGBoost, LightGBM.
-- Lưu model ra file (`joblib`) và tạo API với FastAPI.
