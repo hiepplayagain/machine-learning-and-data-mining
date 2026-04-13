@@ -1,227 +1,180 @@
-"""Train and forecast Hanoi house prices from Vietnamese CSV data."""
-
+import re, warnings
+import numpy as np
 import pandas as pd
-from math import expm1, log1p
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
-from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+import lightgbm as lgb
 
-TARGET_COLUMN = "price"
-RANDOM_STATE = 42
-DATA_FILE = "data/VN_housing_dataset.csv"
-FUTURE_YEAR = 2028
-MAX_TRAIN_ROWS = 3000
-COLUMN_ALIASES = {
-	"year": ["Ngay", "Date"],
-	"area_m2": ["Dien tich", "area", "area m2"],
-	"bedrooms": ["So phong ngu", "bedrooms"],
-	"floors": ["So tang", "floors"],
-	"district": ["Quan", "district"],
-	"property_type": ["Loai hinh nha o", "property type"],
-	"legal_status": ["Giay to phap ly", "legal"],
+warnings.filterwarnings("ignore")
+
+# ── System Configuration ─────────────────────────────────────────────────────
+DATA_PATH   = "data/VN_housing_dataset.csv"
+FORECAST_YEARS = [2025, 2026, 2027]
+TARGET, SEED = "price", 42
+ANNUAL_GROWTH_RATE = 0.09  # Assumed annual market growth rate: 9%
+
+ALIASES = {
+    "year":          ["Ngay", "Date", "year"],
+    "area_m2":       ["Dien tich", "area", "area m2"],
+    "bedrooms":      ["So phong ngu", "bedrooms"],
+    "floors":        ["So tang", "floors"],
+    "district":      ["Quan", "district"],
+    "property_type": ["Loai hinh nha o", "property type"],
+    "legal_status":  ["Giay to phap ly", "legal"],
 }
 
+# ── Data Processing Utilities ────────────────────────────────────────────────
 
-def normalize_name(text: str) -> str:
-	"""Normalize column text to a stable token for alias matching.
+def norm(t):
+    # Normalize text: remove diacritics, lowercase, and replace separators with spaces.
+    s = pd.Series([str(t)]).str.normalize("NFKD").str.encode("ascii","ignore").str.decode("utf-8").str.lower().str.strip().iloc[0]
+    for p in "/,-._()": s = s.replace(p, " ")
+    return " ".join(s.split())
 
-	The function removes accents, lowercases text, and converts common punctuation
-	to spaces so headers like 'Diện tích', 'Dien tich', and 'dien_tich' can be
-	resolved consistently.
-	"""
-	normalized_text = pd.Series([str(text)], dtype="string").str.normalize("NFKD")
-	normalized_text = normalized_text.str.encode("ascii", "ignore").str.decode("utf-8")
-	normalized_text = normalized_text.str.lower().str.strip().iloc[0]
-	for punctuation in ["/", "-", "_", ",", ".", "(", ")"]:
-		normalized_text = normalized_text.replace(punctuation, " ")
-	return " ".join(normalized_text.split())
+def find_col(cols, aliases):
+    # Resolve the real column name in the dataset from a list of possible aliases.
+    m = {norm(c): c for c in cols}
+    return next((m[norm(a)] for a in aliases if norm(a) in m), None)
 
+def to_num(s):
+    # Extract numeric value from free-form text (e.g., "86,96 trieu/m2" -> 86.96); invalid values become NaN.
+    return pd.to_numeric(
+        s.astype("string").str.lower().str.replace(" ","",regex=False)
+         .str.replace(",",".",regex=False).str.extract(r"(-?\d+(?:\.\d+)?)", expand=False),
+        errors="coerce")
 
-def find_column(columns: list[str], aliases: list[str]) -> str | None:
-	"""Return the first real column that matches any alias.
+def sanitize(name):
+    # Convert feature names to safe ASCII identifiers for LightGBM column names.
+    s = pd.Series([str(name)]).str.normalize("NFKD").str.encode("ascii","ignore").str.decode("utf-8").iloc[0]
+    return re.sub(r"[^A-Za-z0-9_]", "_", s)
 
-	Args:
-		columns: Raw column names from the CSV file.
-		aliases: Candidate names for one logical feature.
+def prepare(raw):
+    # Preprocessing pipeline: map columns, cast types, create target/features, and filter outliers.
+    df = raw.drop(columns=[c for c in raw.columns if norm(c).startswith("unnamed")], errors="ignore").copy()
+    
+    for feat, aliases in ALIASES.items():
+        src = find_col(df.columns.tolist(), aliases)
+        if not src: continue
+        if feat == "year": df[feat] = pd.to_datetime(df[src], errors="coerce").dt.year
+        elif feat in {"area_m2","bedrooms","floors"}: df[feat] = to_num(df[src])
+        else: df[feat] = df[src].astype(str).str.strip().replace("nan", "Unknown")
 
-	Returns:
-		Matched original column name or None if no alias exists.
-	"""
-	normalized_columns = {normalize_name(column): column for column in columns}
-	for alias in aliases:
-		matched_column = normalized_columns.get(normalize_name(alias))
-		if matched_column:
-			return matched_column
-	return None
+    ppm2 = find_col(df.columns.tolist(), ["Gia/m2","price/m2","gia m2"])
+    if TARGET not in df.columns and ppm2 and "area_m2" in df.columns:
+        df[TARGET] = to_num(df[ppm2]) * 1_000_000 * df["area_m2"]
+    
+    if TARGET in df.columns:
+        # Remove implausible values to stabilize model training.
+        df = df[(df[TARGET] > 8e8) & (df[TARGET] < 5e11)].copy()
+        if "area_m2" in df.columns:
+            df = df[(df["area_m2"] > 15) & (df["area_m2"] < 1500)]
 
+    if "year" in df.columns:
+        df["year"] = df["year"].fillna(df["year"].median())
+    
+    # Feature engineering
+    if {"area_m2","bedrooms"}.issubset(df.columns): 
+        df["area_per_bed"] = df["area_m2"] / df["bedrooms"].replace(0, np.nan)
+    if {"district","area_m2"}.issubset(df.columns):
+        avg_area_dist = df.groupby("district")["area_m2"].transform("mean")
+        df["rel_area_dist"] = df["area_m2"] / avg_area_dist
 
-def convert_to_number_series(series: pd.Series) -> pd.Series:
-	"""Extract numeric values from mixed text and return float series.
+    keep = [c for c in [*ALIASES,"area_per_bed","rel_area_dist",TARGET] if c in df.columns]
+    return df[keep].dropna(subset=[TARGET])
 
-	Examples:
-		'46 m2' -> 46.0
-		'86,96 trieu/m2' -> 86.96
-	"""
-	cleaned_values = series.astype("string").str.lower().str.replace(" ", "", regex=False).str.replace(",", ".", regex=False)
-	return pd.to_numeric(cleaned_values.str.extract(r"(-?\d+(?:\.\d+)?)", expand=False), errors="coerce")
+# ── Advanced Valuation Model ─────────────────────────────────────────────────
 
+class ValuationModel:
+    def __init__(self):
+        # pre: feature transformer, lgbm: trained LightGBM model, fnames: encoded feature names.
+        self.pre = None
+        self.lgbm = None
+        self.fnames = []
+        self.min_price_log = 0
 
-def prepare_data(raw_data: pd.DataFrame) -> pd.DataFrame:
-	"""Build a model-ready dataframe from raw housing data.
+    def _build_pre(self, X):
+        # Numeric -> median imputation + scaling; categorical -> mode imputation + one-hot encoding.
+        num = X.select_dtypes("number").columns.tolist()
+        cat = X.select_dtypes(exclude="number").columns.tolist()
+        return ColumnTransformer([
+            ("n", Pipeline([("i", SimpleImputer(strategy="median")), ("s", StandardScaler())]), num),
+            ("c", Pipeline([("i", SimpleImputer(strategy="most_frequent")),
+                            ("o", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), cat),
+        ], verbose_feature_names_out=False)
 
-	Main steps:
-	1. Remove unnamed helper columns from CSV exports.
-	2. Resolve feature columns by Vietnamese/English aliases.
-	3. Convert numeric-like text fields into numeric values.
-	4. Construct target `price` from area and price-per-square-meter when needed.
-	5. Add a few helpful engineered features.
-	"""
-	data = raw_data.drop(columns=[column for column in raw_data.columns if normalize_name(column).startswith("unnamed")], errors="ignore").copy()
-	resolved_columns = {feature_name: find_column(data.columns.tolist(), aliases) for feature_name, aliases in COLUMN_ALIASES.items()}
+    def fit(self, X, y):
+        # Train on log(price) to reduce outlier skew and stabilize relative error.
+        log_y = np.log1p(y)
+        self.min_price_log = log_y.min()
+        
+        self.pre = self._build_pre(X)
+        Xe = self.pre.fit_transform(X)
+        self.fnames = [sanitize(n) for n in self.pre.get_feature_names_out()]
+        Xe_df = pd.DataFrame(Xe, columns=self.fnames)
+        
+        Xtr, Xva, ytr, yva = train_test_split(Xe_df, log_y, test_size=0.15, random_state=SEED)
+        
+        self.lgbm = lgb.LGBMRegressor(
+            n_estimators=3000, learning_rate=0.01, num_leaves=127,
+            max_depth=12, reg_alpha=1.0, reg_lambda=1.0,
+            n_jobs=-1, random_state=SEED, verbose=-1
+        )
+        self.lgbm.fit(Xtr, ytr, eval_set=[(Xva, yva)],
+                      callbacks=[lgb.early_stopping(200, verbose=False)])
 
-	for feature_name, source_name in resolved_columns.items():
-		if not source_name:
-			continue
-		if feature_name == "year":
-			data[feature_name] = pd.to_datetime(data[source_name], errors="coerce").dt.year
-		elif feature_name in {"area_m2", "bedrooms", "floors"}:
-			data[feature_name] = convert_to_number_series(data[source_name])
-		else:
-			data[feature_name] = data[source_name].astype("string").fillna("").astype(str)
+    def predict(self, X):
+        # Inference flow: transform features -> predict log(price) -> map back to VND with expm1.
+        Xe = pd.DataFrame(self.pre.transform(X), columns=self.fnames)
+        pred_log = self.lgbm.predict(Xe)
+        # Prevent unrealistic negative prices by clamping to the minimum log-price seen in training.
+        return np.expm1(np.maximum(pred_log, self.min_price_log))
 
-	price_per_square_meter_column = find_column(data.columns.tolist(), ["Gia/m2", "price/m2", "gia m2"])
-	if TARGET_COLUMN not in data.columns and price_per_square_meter_column and "area_m2" in data.columns:
-		data[TARGET_COLUMN] = convert_to_number_series(data[price_per_square_meter_column]) * 1_000_000 * data["area_m2"]
-
-	# Basic interaction feature that usually helps tree-based models.
-	if {"area_m2", "bedrooms"}.issubset(data.columns):
-		data["area_per_bedroom"] = data["area_m2"] / data["bedrooms"].replace(0, pd.NA)
-
-	# Combine location and property type to provide richer categorical signal.
-	if {"district", "property_type"}.issubset(data.columns):
-		data["district_property_type"] = data["district"].str.strip() + "|" + data["property_type"].str.strip()
-
-	selected_columns = [column for column in [*COLUMN_ALIASES, "area_per_bedroom", "district_property_type", TARGET_COLUMN] if column in data.columns]
-	prepared_data = data[selected_columns]
-	if TARGET_COLUMN in prepared_data.columns:
-		prepared_data = prepared_data.dropna(subset=[TARGET_COLUMN])
-	return prepared_data.dropna(axis=0, how="all")
-
-
-def load_data(file_path: str) -> pd.DataFrame:
-	"""Load CSV, preprocess data, and validate minimum training requirements."""
-	try:
-		raw_data = pd.read_csv(file_path)
-	except FileNotFoundError as exception:
-		raise FileNotFoundError(f"Data file not found: {file_path}. Create the CSV as documented in README.md") from exception
-
-	prepared_data = prepare_data(raw_data)
-	if TARGET_COLUMN not in prepared_data.columns:
-		raise ValueError("Cannot build target 'price'. Need either a price column or both Dien tich and Gia/m2 columns.")
-	if prepared_data.shape[0] < 30:
-		raise ValueError("Dataset should have at least 30 rows for basic training")
-	if len([column for column in prepared_data.columns if column != TARGET_COLUMN]) == 0:
-		raise ValueError("No valid feature columns found after preprocessing")
-	return prepared_data
-
-
-def build_model(feature_data: pd.DataFrame) -> Pipeline:
-	"""Create preprocessing + regressor pipeline.
-
-	- Numeric columns: median imputation.
-	- Categorical columns: mode imputation + one-hot encoding.
-	- Regressor: ExtraTrees with log-transform target wrapper.
-	"""
-	numeric_columns = feature_data.select_dtypes(include=["number"]).columns.tolist()
-	categorical_columns = [column for column in feature_data.columns if column not in numeric_columns]
-
-	preprocessor = ColumnTransformer(
-		transformers=[
-			("numeric", SimpleImputer(strategy="median"), numeric_columns),
-			(
-				"categorical",
-				Pipeline(
-					steps=[
-						("imputer", SimpleImputer(strategy="most_frequent")),
-						("one_hot", OneHotEncoder(handle_unknown="ignore")),
-					]
-				),
-				categorical_columns,
-			),
-		]
-	)
-
-	return Pipeline(
-		steps=[
-			("preprocess", preprocessor),
-			(
-				"regressor",
-				TransformedTargetRegressor(
-					regressor=ExtraTreesRegressor(
-						random_state=RANDOM_STATE,
-						n_estimators=160,
-						max_features=0.7,
-						n_jobs=-1,
-					),
-					func=lambda values: pd.DataFrame(values).astype(float).apply(lambda column: column.map(log1p)).to_numpy(),
-					inverse_func=lambda values: pd.DataFrame(values).astype(float).apply(lambda column: column.map(expm1)).to_numpy(),
-				),
-			),
-		]
-	)
-
-
-def train_model(prepared_data: pd.DataFrame) -> tuple[Pipeline, float]:
-	"""Train/test split, fit model, and compute accuracy percent from MAPE.
-
-	Accuracy formula used:
-		accuracy = max(0, 100 - MAPE)
-	"""
-	features = prepared_data.drop(columns=[TARGET_COLUMN])
-	target = prepared_data[TARGET_COLUMN]
-	training_features, testing_features, training_target, testing_target = train_test_split(
-		features, target, test_size=0.2, random_state=RANDOM_STATE
-	)
-
-	model = build_model(training_features)
-	model.fit(training_features, training_target)
-	predicted_target = model.predict(testing_features)
-	valid_target_mask = testing_target != 0
-	accuracy_percent = (
-		max(
-			0.0,
-			100.0
-			- float(
-				((testing_target[valid_target_mask] - predicted_target[valid_target_mask]).abs() / testing_target[valid_target_mask]).mean() * 100
-			),
-		)
-		if valid_target_mask.any()
-		else float("nan")
-	)
-	return model, accuracy_percent
-
-
-def main() -> None:
-	"""Run full flow: load data, train model, forecast future price, print output."""
-	prepared_data = load_data(DATA_FILE)
-	# Keep runtime stable by training on a capped sample when dataset is large.
-	if len(prepared_data) > MAX_TRAIN_ROWS:
-		prepared_data = prepared_data.sample(n=MAX_TRAIN_ROWS, random_state=RANDOM_STATE)
-
-	model, accuracy_percent = train_model(prepared_data)
-	future_sample = prepared_data.drop(columns=[TARGET_COLUMN]).iloc[[0]].copy()
-	if "year" in future_sample.columns:
-		future_sample["year"] = FUTURE_YEAR
-	future_price = model.predict(future_sample)[0]
-
-	print("House price prediction")
-	print(f"Year: {FUTURE_YEAR}")
-	print(f"Predicted price (VND): {future_price:,.0f}")
-	print(f"Accuracy (%): {accuracy_percent:.2f}")
-
+# ── Execution ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-	main()
+    print("Processing dataset...")
+    df = prepare(pd.read_csv(DATA_PATH))
+    
+    print(f"Clean rows: {len(df)}. Year range in file: {int(df['year'].min())}-{int(df['year'].max())}")
+    
+    X, y = df.drop(columns=[TARGET]), df[TARGET]
+    
+    print("Evaluating valuation accuracy (3-fold CV)...")
+    kf = KFold(n_splits=3, shuffle=True, random_state=SEED)
+    mapes = []
+    
+    for tr_idx, va_idx in kf.split(X):
+        m = ValuationModel()
+        m.fit(X.iloc[tr_idx], y.iloc[tr_idx])
+        p = m.predict(X.iloc[va_idx])
+        yt = y.iloc[va_idx]
+        mapes.append(np.mean(np.abs((yt - p) / yt)) * 100)
+        
+    accuracy = 100 - np.mean(mapes)
+    
+    print("Training final model on 100% of data...")
+    final_model = ValuationModel()
+    final_model.fit(X, y)
+    
+    print(f"Done! Valuation accuracy: {accuracy:.2f}%")
+    print(f"Applied expected annual growth rate: {ANNUAL_GROWTH_RATE*100}%")
+    
+    print(f"\n{'Year':<8} {'Forecast Price (VND)':>25} {'Billion':>10}")
+    print("-" * 50)
+    
+    # Estimate a representative home at the latest year present in the dataset.
+    base_row = X.mode().iloc[0].to_dict()
+    current_year_in_data = int(df['year'].max())
+    base_row['year'] = current_year_in_data
+    
+    price_base = final_model.predict(pd.DataFrame([base_row]))[0]
+    print(f"{current_year_in_data} (Base) {price_base:>20,.0f} {price_base/1e9:>9.2f}")
+    
+    # Extrapolate future prices using compound growth.
+    for yr in FORECAST_YEARS:
+        years_diff = yr - current_year_in_data
+        p_future = price_base * ((1 + ANNUAL_GROWTH_RATE) ** years_diff)
+        print(f"{yr:<8} {p_future:>25,.0f} {p_future/1e9:>9.2f}")
