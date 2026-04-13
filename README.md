@@ -1,34 +1,21 @@
 
-# Dự án Machine Learning: Dự đoán giá nhà Hà Nội
+# Du an Machine Learning: Du doan gia nha Viet Nam
 
 English version: [README_EN.md](README_EN.md)
 
-Mục tiêu dự án:
-- Dự đoán giá nhà từ các đặc trưng bất động sản.
-- Có khả năng dự đoán cho các năm tương lai mặc định từ 2025 đến 2027.
+Muc tieu:
+- Tien xu ly du lieu bat dong san tu file CSV.
+- Huan luyen mo hinh hoi quy de du doan gia nha.
+- Danh gia nhanh tren tap test bang chi so MAPE.
 
-## 1. Cấu trúc dự án
+## 1. Cau truc du an
 
-- `main.py`: Script tiền xử lý dữ liệu, huấn luyện mô hình LightGBM và dự đoán các năm tương lai.
-- `data/VN_housing_dataset.csv`: Dữ liệu đầu vào.
+- `main.py`: Tien xu ly du lieu, tao dac trung, huan luyen mo hinh va in ket qua.
+- `data/VN_housing_dataset.csv`: Du lieu dau vao.
+- `requirements.txt`: Danh sach thu vien can cai.
+- `train_report.json`, `reports/train_report.json`: Tep bao cao (neu co).
 
-## 2. Cài đặt môi trường
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## 2.1 Quy tắc push code
-
-- Không push thư mục môi trường ảo `.venv/` lên GitHub.
-- Không push các file phát sinh như `__pycache__/`, `*.pyc`.
-- Repository chỉ nên chứa source code, dữ liệu cần thiết, báo cáo và tài liệu.
-
-File `.gitignore` đã được cấu hình để bỏ qua các thành phần trên.
-
-Nếu bạn vừa clone/fork repo, hãy tự cài lại môi trường:
+## 2. Cai dat moi truong
 
 ```bash
 python3 -m venv .venv
@@ -36,107 +23,79 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 3. Chuẩn bị dữ liệu
+## 3. Dinh dang du lieu dau vao
 
-Script hỗ trợ trực tiếp format cột tiếng Việt, ví dụ:
+Chuong trinh ho tro anh xa ten cot qua bang alias trong `main.py`, gom:
+- `Ngay` hoac `year` -> `year`
+- `Dien tich` hoac `area` -> `area_m2`
+- `So phong ngu` hoac `bedrooms` -> `bedrooms`
+- `So tang` hoac `floors` -> `floors`
+- `Quan` hoac `district` -> `district`
+- `Loai hinh nha o` hoac `property_type` -> `property_type`
 
-- `Ngay`
-- `Dia chi`
-- `Quan`
-- `Huyen`
-- `Loai hinh nha o`
-- `Giay to phap ly`
-- `So tang`
-- `So phong ngu`
-- `Dien tich` (ví dụ `46 m2`)
-- `Gia/m2` (ví dụ `86,96 trieu/m2`)
+Gia muc tieu `price` duoc tinh tu cot `Gia/m2` (hoac `Gia/m2`) nhan voi `area_m2`.
 
-Script sẽ tự động:
-- Tách số từ `Dien tich`, `So phong ngu`, `So tang`
-- Lấy `year` từ cột `Ngay`
-- Tạo thêm đặc trưng `area_per_bed` (diện tích mỗi phòng ngủ)
-- Tạo thêm đặc trưng `rel_area_dist` (diện tích tương đối so với trung bình quận)
-- Tính target `price` theo công thức:
+Ham xu ly so `clean_numeric_string` co the doc cac dang nhu:
+- `86,96 trieu/m2`
+- `2.5 ty`
+- `46 m2`
 
-$$
-price = Dien\ tich \times Gia/m2 \times 1{,}000{,}000
-$$
+Va tu dong quy doi:
+- `trieu` -> 1,000,000
+- `ty` -> 1,000,000,000
 
-Ví dụ 1 dòng:
+## 4. Tien xu ly va tao dac trung
 
-```csv
-Ngay,Dia chi,Quan,Huyen,Loai hinh nha o,Giay to phap ly,So tang,So phong ngu,Dien tich,Dai,Rong,Gia/m2
-2020-08-05,"Duong Hoang Quoc Viet, Phuong Nghia Do, Quan Cau Giay, Ha Noi",Quan Cau Giay,Phuong Nghia Do,"Nha ngo, hem",Da co so,4,5 phong,46 m2,,,"86,96 trieu/m2"
-```
+Trong `prepare_advanced`, du lieu duoc xu ly theo cac buoc:
+- Rut trich cac cot can thiet tu alias.
+- Chuyen cot ngay sang nam (`year`).
+- Loai bo dong thieu cac cot bat buoc: `price`, `year`, `area_m2`.
+- Tao dac trung `m2_per_bed = area_m2 / bedrooms` (thay 0 bang 1 de tranh chia cho 0).
+- Tao dac trung `district_rank` bang trung binh `log1p(price)` theo tung quan.
+- Loc outlier cho `price` va `area_m2` theo nguong phan vi 5% va 95%.
 
-Khuyến nghị tối thiểu 30 dòng dữ liệu để mô hình học ổn định.
+## 5. Huan luyen mo hinh
 
-## 4. Chạy train và dự đoán
+Script chia du lieu theo nam:
+- Train: `year < 2020`
+- Test: `year == 2020`
+
+Bo dac trung huan luyen:
+- `area_m2`
+- `bedrooms`
+- `floors`
+- `m2_per_bed`
+- `district_rank`
+
+Pipeline mo hinh:
+- `SimpleImputer(strategy="median")`
+- `StandardScaler()`
+- `ExtraTreesRegressor` voi:
+	- `n_estimators=1000`
+	- `max_depth=40`
+	- `min_samples_split=2`
+	- `random_state=42`
+	- `n_jobs=-1`
+
+Nhan huan luyen su dung bien doi log:
+- Train tren `log1p(price)`
+- Du doan xong doi nguoc bang `expm1`
+
+## 6. Chay chuong trinh
 
 ```bash
 python3 main.py
 ```
 
-Kết quả in ra màn hình gồm:
-- Khoảng năm có trong dữ liệu train.
-- Accuracy theo công thức `100 - MAPE` từ 3-fold cross-validation.
-- Giá dự đoán cho các năm 2025, 2026, 2027 theo cả VND và tỷ.
+Man hinh se in:
+- Trang thai huan luyen.
+- Do chinh xac theo cong thuc `100 - MAPE`.
+- Thoi gian xu ly.
+- Mot so dong so sanh gia thuc te va gia du doan (don vi ty).
 
-Mô hình hiện tại dùng LightGBM hồi quy trên nhãn log-price.
+## 7. Luu y
 
-## 4.1 LightGBM trong dự án tính dự đoán như thế nào?
-
-Trong code, mô hình học hàm:
-
-$$
-f(\mathbf{x}) \approx \log(1 + price)
-$$
-
-với $\mathbf{x}$ là vector đặc trưng đã qua tiền xử lý (impute, scale số, one-hot cho biến phân loại).
-
-Quy trình tính dự đoán gồm 5 bước chính:
-
-1. Biến đổi đầu vào sang không gian đặc trưng
-- Biến số (`area_m2`, `bedrooms`, `floors`, `year`, ...): điền thiếu bằng median và chuẩn hóa.
-- Biến phân loại (`district`, `property_type`, `legal_status`, ...): điền thiếu bằng giá trị phổ biến nhất rồi one-hot encode.
-
-2. Mô hình cộng dồn nhiều cây quyết định
-- LightGBM xây một dãy cây CART.
-- Ở vòng lặp thứ $t$, mô hình thêm cây mới $h_t(\mathbf{x})$ để giảm sai số còn lại (gradient) của mô hình hiện tại.
-- Điểm dự đoán trên thang log là tổng có trọng số:
-
-$$
-\hat{y}_{log}(\mathbf{x}) = \sum_{t=1}^{T} \eta \cdot h_t(\mathbf{x})
-$$
-
-Trong đó $\eta$ là `learning_rate`, $T$ là số cây thực dùng (có thể nhỏ hơn `n_estimators` do early stopping).
-
-3. Chọn điểm rẽ nhánh tối ưu bằng gain
-- Mỗi cây chọn split sao cho giảm loss tốt nhất.
-- LightGBM dùng histogram binning để tăng tốc tìm split trên dữ liệu lớn.
-
-4. Early stopping để tránh overfit
-- Code tách validation 15% và dùng `early_stopping(200)`.
-- Nếu 200 vòng liên tiếp không cải thiện loss validation, quá trình train dừng sớm.
-
-5. Đưa kết quả về đơn vị giá thực
-- Dự đoán ra $\hat{y}_{log}$.
-- Chặn dưới bằng log-price nhỏ nhất trong train để tránh giá âm phi thực tế.
-- Chuyển ngược về VND:
-
-$$
-\hat{price} = \exp(\hat{y}_{log}) - 1
-$$
-
-Sau khi có `price_base` tại năm cuối của dữ liệu, script mới áp dụng tăng trưởng lãi kép để ngoại suy các năm tương lai:
-
-$$
-price_{future} = price_{base} \cdot (1 + r)^{\Delta year}
-$$
-
-với $r = 0.09$ theo cấu hình hiện tại.
-
-Nếu muốn đổi khoảng năm dự đoán, sửa hằng số `FORECAST_YEARS` trong `main.py`.
-
-## 5. Mở rộng tiếp theo
+- Neu tap test nam 2020 khong co du lieu, can dieu chinh cach chia train/test trong `main.py`.
+- Du lieu dau vao nen du lon va da duoc lam sach de giam MAPE.
+- Du an hien tai la bai toan danh gia tren nam 2020, khong co phan du doan cac nam tuong lai.
 
