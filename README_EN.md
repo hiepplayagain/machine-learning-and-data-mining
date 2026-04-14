@@ -3,16 +3,21 @@
 Vietnamese version: [README.md](README.md)
 
 Goals:
-- Preprocess real-estate data from CSV.
-- Train a regression model to estimate house prices.
-- Evaluate quickly on a held-out test split using MAPE.
+- Normalize Vietnamese column names with stopwordsiso.
+- Prepare housing data and compute target price from price-per-m2.
+- Train an ExtraTrees regressor.
+- Visualize model quality with matplotlib + seaborn.
+- Export production-ready artifacts.
 
 ## 1. Project Structure
 
-- `main.py`: Data preprocessing, feature engineering, model training, and console reporting.
+- `main.py`: 3-stage pipeline (`practice -> train -> test`).
 - `data/VN_housing_dataset.csv`: Input dataset.
+- `reports/model_evaluation_dashboard_2020.png`: Actual vs Predicted scatter chart.
+- `production/housing_price_model_2020.pkl`: Trained model.
+- `production/model_metadata.json`: Metadata (features, metrics, rename mapping).
+- `production/test_predictions.csv`: Test-set predictions.
 - `requirements.txt`: Python dependencies.
-- `train_report.json`, `reports/train_report.json`: Report files (if generated).
 
 ## 2. Environment Setup
 
@@ -22,78 +27,62 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 3. Input Data and Supported Columns
+## 3. Vietnamese Column Name Handling
 
-The script maps input columns using aliases in `main.py`:
-- `Ngay` or `year` -> `year`
-- `Dien tich` or `area` -> `area_m2`
-- `So phong ngu` or `bedrooms` -> `bedrooms`
-- `So tang` or `floors` -> `floors`
-- `Quan` or `district` -> `district`
-- `Loai hinh nha o` or `property_type` -> `property_type`
+The script uses `stopwordsiso` (`vi`) and applies:
+- Accent removal.
+- Alphanumeric tokenization.
+- Stopword filtering, while preserving critical domain tokens (`ngay`, `dien`, `tich`, `gia`, `m2`, ...).
+- Snake-case normalization.
 
-Target `price` is computed from the `Gia/m2` column multiplied by `area_m2`.
+Examples:
+- `Thong tin Ngay dang` -> `ngay_dang`
+- `Gia/m2 (trieu)` -> `gia_m2_trieu`
 
-The numeric parser (`clean_numeric_string`) supports values such as:
-- `86,96 trieu/m2`
-- `2.5 ty`
-- `46 m2`
+## 4. Three-Stage Pipeline
 
-Unit conversion rules:
-- `trieu` -> 1,000,000
-- `ty` -> 1,000,000,000
+### Stage 1/3 - Practice
 
-## 4. Preprocessing and Feature Engineering
+- Normalize Vietnamese column names.
+- Detect required columns by keyword rules (`year`, `area`, `bed`, `floor`, `dist`, `type`).
+- Compute `price = price_per_m2 * area`.
+- Keep year 2020 records (if year column exists).
+- Remove price outliers (`5e8` to `5e11`).
+- Encode categorical columns (`dist`, `type`) with `OrdinalEncoder`.
 
-Inside `prepare_advanced`, the pipeline does:
-- Extract required columns through alias matching.
-- Convert date to year.
-- Drop rows missing required fields: `price`, `year`, `area_m2`.
-- Create `m2_per_bed = area_m2 / bedrooms` (replace 0 bedrooms by 1 to avoid division by zero).
-- Create `district_rank` from district-wise mean of `log1p(price)`.
-- Remove outliers for `price` and `area_m2` using 5th and 95th percentiles.
+### Stage 2/3 - Train
 
-## 5. Model Training
+- Split data with `train_test_split(test_size=0.2, random_state=42)`.
+- Train `ExtraTreesRegressor` on `log1p(price)`.
 
-The script splits data by year:
-- Train: `year < 2020`
-- Test: `year == 2020`
+### Stage 3/3 - Test
 
-Model features:
-- `area_m2`
-- `bedrooms`
-- `floors`
-- `m2_per_bed`
-- `district_rank`
+- Predict and invert with `expm1`.
+- Compute `MAPE`, `MAE`, and `R2`.
+- Save one chart only: Actual vs Predicted scatter.
+- Export production artifacts.
 
-Model pipeline:
-- `SimpleImputer(strategy="median")`
-- `StandardScaler()`
-- `ExtraTreesRegressor` with:
-	- `n_estimators=1000`
-	- `max_depth=40`
-	- `min_samples_split=2`
-	- `random_state=42`
-	- `n_jobs=-1`
-
-Training target transformation:
-- Train on `log1p(price)`
-- Invert predictions with `expm1`
-
-## 6. Run
+## 5. Run
 
 ```bash
 python3 main.py
 ```
 
 Console output includes:
-- Training status.
-- Accuracy computed as `100 - MAPE`.
-- Processing time.
-- A small sample of real vs predicted prices (in billion VND).
+- 3-stage progress logs.
+- Train/test sizes.
+- `Accuracy = 100 - MAPE`.
+- `MAPE`, `MAE`, `R2`.
+- Sample rows of actual vs predicted values.
+
+## 6. Production Artifacts
+
+After a successful run, `production` contains:
+- `housing_price_model_2020.pkl`
+- `model_metadata.json`
+- `test_predictions.csv`
 
 ## 7. Notes
 
-- If year 2020 is missing in your dataset, adjust the train/test split in `main.py`.
-- Cleaner and larger datasets usually reduce MAPE.
-- Current code focuses on evaluation on year 2020 and does not perform future-year forecasting.
+- `stopwordsiso` currently depends on `pkg_resources`, so `setuptools<81` is pinned in requirements.
+- If your dataset schema changes significantly, update `column_rules` in `main.py`.

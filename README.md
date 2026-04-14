@@ -1,21 +1,25 @@
-
-# Du an Machine Learning: Du doan gia nha Viet Nam
+# Dự án Machine Learning: Dự đoán giá nhà Việt Nam
 
 English version: [README_EN.md](README_EN.md)
 
-Muc tieu:
-- Tien xu ly du lieu bat dong san tu file CSV.
-- Huan luyen mo hinh hoi quy de du doan gia nha.
-- Danh gia nhanh tren tap test bang chi so MAPE.
+Mục tiêu:
+- Chuẩn hóa tên cột tiếng Việt bằng stopwordsiso.
+- Tiền xử lý dữ liệu nhà đất và tính giá mục tiêu từ Giá/m2.
+- Huấn luyện mô hình ExtraTreesRegressor.
+- Đánh giá trực quan bằng matplotlib + seaborn.
+- Xuất bộ file production để sử dụng lại.
 
-## 1. Cau truc du an
+## 1. Cấu trúc dự án
 
-- `main.py`: Tien xu ly du lieu, tao dac trung, huan luyen mo hinh va in ket qua.
-- `data/VN_housing_dataset.csv`: Du lieu dau vao.
-- `requirements.txt`: Danh sach thu vien can cai.
-- `train_report.json`, `reports/train_report.json`: Tep bao cao (neu co).
+- `main.py`: Pipeline 3 giai đoạn `practice -> train -> test`.
+- `data/VN_housing_dataset.csv`: Dữ liệu đầu vào.
+- `reports/model_evaluation_dashboard_2020.png`: Biểu đồ scatter Actual vs Predicted để đánh giá mô hình.
+- `production/housing_price_model_2020.pkl`: Model đã huấn luyện.
+- `production/model_metadata.json`: Metadata (feature, metric, mapping tên cột).
+- `production/test_predictions.csv`: Kết quả dự đoán trên tập test.
+- `requirements.txt`: Thư viện cần cài.
 
-## 2. Cai dat moi truong
+## 2. Cài đặt môi trường
 
 ```bash
 python3 -m venv .venv
@@ -23,79 +27,77 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 3. Dinh dang du lieu dau vao
+## 3. Tiền xử lý tên cột tiếng Việt
 
-Chuong trinh ho tro anh xa ten cot qua bang alias trong `main.py`, gom:
-- `Ngay` hoac `year` -> `year`
-- `Dien tich` hoac `area` -> `area_m2`
-- `So phong ngu` hoac `bedrooms` -> `bedrooms`
-- `So tang` hoac `floors` -> `floors`
-- `Quan` hoac `district` -> `district`
-- `Loai hinh nha o` hoac `property_type` -> `property_type`
+Script dùng `stopwordsiso` (`vi`) để bỏ từ dừng trong tên cột, kết hợp:
+- Bỏ dấu tiếng Việt.
+- Tách token alphanumeric.
+- Giữ lại các token nghiệp vụ quan trọng (`ngay`, `dien`, `tich`, `gia`, `m2`, ...).
+- Đổi tên cột về dạng `snake_case`.
 
-Gia muc tieu `price` duoc tinh tu cot `Gia/m2` (hoac `Gia/m2`) nhan voi `area_m2`.
+Ví dụ:
+- `Thông tin Ngày đăng` -> `ngay_dang`
+- `Giá/m2 (triệu)` -> `gia_m2_trieu`
 
-Ham xu ly so `clean_numeric_string` co the doc cac dang nhu:
-- `86,96 trieu/m2`
-- `2.5 ty`
-- `46 m2`
+## 4. Pipeline 3 giai đoạn
 
-Va tu dong quy doi:
-- `trieu` -> 1,000,000
-- `ty` -> 1,000,000,000
+### Stage 1/3 - Practice
 
-## 4. Tien xu ly va tao dac trung
+- Chuẩn hóa tên cột tiếng Việt.
+- Tìm các cột cần thiết theo keyword (`year`, `area`, `bed`, `floor`, `dist`, `type`).
+- Tính `price = price_per_m2 * area`.
+- Lọc dữ liệu năm 2020 (nếu có cột năm).
+- Loại bỏ outlier giá (`5e8` đến `5e11`).
+- Mã hóa cột phân loại (`dist`, `type`) bằng `OrdinalEncoder`.
 
-Trong `prepare_advanced`, du lieu duoc xu ly theo cac buoc:
-- Rut trich cac cot can thiet tu alias.
-- Chuyen cot ngay sang nam (`year`).
-- Loai bo dong thieu cac cot bat buoc: `price`, `year`, `area_m2`.
-- Tao dac trung `m2_per_bed = area_m2 / bedrooms` (thay 0 bang 1 de tranh chia cho 0).
-- Tao dac trung `district_rank` bang trung binh `log1p(price)` theo tung quan.
-- Loc outlier cho `price` va `area_m2` theo nguong phan vi 5% va 95%.
+### Stage 2/3 - Train
 
-## 5. Huan luyen mo hinh
+- Chia `train_test_split(test_size=0.2, random_state=42)`.
+- Huấn luyện `ExtraTreesRegressor` trên `log1p(price)`.
 
-Script chia du lieu theo nam:
-- Train: `year < 2020`
-- Test: `year == 2020`
+### Stage 3/3 - Test
 
-Bo dac trung huan luyen:
-- `area_m2`
-- `bedrooms`
-- `floors`
-- `m2_per_bed`
-- `district_rank`
+- Suy luận và đổi ngược bằng `expm1`.
+- Tính metric: `MAPE`, `MAE`, `R2`.
+- Vẽ duy nhất biểu đồ **Actual vs Predicted Scatter**.
+- Xuất artifact production.
 
-Pipeline mo hinh:
-- `SimpleImputer(strategy="median")`
-- `StandardScaler()`
-- `ExtraTreesRegressor` voi:
-	- `n_estimators=1000`
-	- `max_depth=40`
-	- `min_samples_split=2`
-	- `random_state=42`
-	- `n_jobs=-1`
+## 5. Giải thích biểu đồ Actual vs Predicted Scatter
 
-Nhan huan luyen su dung bien doi log:
-- Train tren `log1p(price)`
-- Du doan xong doi nguoc bang `expm1`
+Biểu đồ này so sánh giá thật (`Actual`) và giá dự đoán (`Predicted`) trên tập test.
 
-## 6. Chay chuong trinh
+- Trục X: Giá thực tế (tỷ VND).
+- Trục Y: Giá mô hình dự đoán (tỷ VND).
+- Đường đỏ nét đứt `y = x`: đường lý tưởng, nghĩa là dự đoán bằng đúng giá thật.
+
+Cách đọc nhanh:
+- Điểm càng gần đường `y = x` thì dự đoán càng chính xác.
+- Điểm nằm **trên** đường `y = x`: mô hình dự đoán cao hơn thực tế (over-predict).
+- Điểm nằm **dưới** đường `y = x`: mô hình dự đoán thấp hơn thực tế (under-predict).
+- Nếu ở vùng giá cao các điểm lệch xa đường hơn, mô hình đang khó học tốt với nhóm nhà giá cao.
+
+## 6. Chạy chương trình
 
 ```bash
 python3 main.py
 ```
 
-Man hinh se in:
-- Trang thai huan luyen.
-- Do chinh xac theo cong thuc `100 - MAPE`.
-- Thoi gian xu ly.
-- Mot so dong so sanh gia thuc te va gia du doan (don vi ty).
+Màn hình sẽ in:
+- Trạng thái của 3 stage.
+- Số dòng train/test.
+- `Accuracy = 100 - MAPE`.
+- `MAPE`, `MAE`, `R2`.
+- Mẫu 10 dòng dự đoán.
 
-## 7. Luu y
+## 7. Artifact production
 
-- Neu tap test nam 2020 khong co du lieu, can dieu chinh cach chia train/test trong `main.py`.
-- Du lieu dau vao nen du lon va da duoc lam sach de giam MAPE.
-- Du an hien tai la bai toan danh gia tren nam 2020, khong co phan du doan cac nam tuong lai.
+Sau khi chạy thành công, thư mục `production` gồm:
+- `housing_price_model_2020.pkl`
+- `model_metadata.json`
+- `test_predictions.csv`
+
+## 8. Lưu ý
+
+- `stopwordsiso` hiện vẫn sử dụng `pkg_resources`; đã pin `setuptools<81` trong requirements để tương thích.
+- Nếu bộ dữ liệu thay đổi mạnh tên cột, có thể cần cập nhật `column_rules` trong `main.py`.
 
