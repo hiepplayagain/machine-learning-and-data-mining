@@ -167,7 +167,7 @@ def practice_prepare(raw_dataframe):
     if price_per_m2_column and "area" in df.columns:
         df["price"] = normalized_raw_dataframe[price_per_m2_column].apply(clean_num) * df["area"]
 
-    # LỌC: Chỉ giữ dữ liệu năm 2020 nếu có cột năm
+    # FILTER: Keep only 2020 records if the year column is available.
     if "year" in df.columns:
         df = df[df["year"] == 2020]
 
@@ -178,10 +178,10 @@ def practice_prepare(raw_dataframe):
 
     df = df.dropna(subset=required_columns)
 
-    # Lọc bỏ giá trị ngoại lai để mô hình ổn định hơn
+    # Remove outliers to make training more stable.
     df = df[(df["price"] > 5e8) & (df["price"] < 5e11)]
 
-    # Mã hóa các biến phân loại (Quận, Loại hình)
+    # Encode categorical features (District, Property Type).
     for categorical_column_name in ["dist", "type"]:
         if categorical_column_name in df.columns:
             df[categorical_column_name] = OrdinalEncoder().fit_transform(df[[categorical_column_name]].astype(str))
@@ -238,6 +238,36 @@ def export_production_bundle(model, metrics, features, predictions_dataframe, re
 
     return production_dir
 
+def predict_manual_input(model, available_features, metrics):
+    """
+    Allow manual input of house features to get a price prediction with accuracy rate.
+    """
+    print("\n--- ENTER HOUSE INFORMATION FOR PRICE PREDICTION ---")
+    print("\nType: (Apartment = 0, Streetfront house = 1)")
+    input_data = {}
+    
+    for feature in available_features:
+        val = input(f"Enter {feature}: ")
+        input_data[feature] = float(val)
+
+    input_df = pd.DataFrame([input_data])
+    
+    log_prediction = model.predict(input_df)
+    final_price = np.expm1(log_prediction)[0]
+    
+    # Compute model accuracy and estimated prediction range.
+    mape = metrics['mape']
+    accuracy = 100 - mape
+    price_variance = final_price * (mape / 100) # Estimated absolute deviation based on MAPE.
+    
+    lower_bound = (final_price - price_variance) / 1e9
+    upper_bound = (final_price + price_variance) / 1e9
+    
+    print("-" * 50)
+    print(f"PREDICTED PRICE    : {final_price / 1e9:.3f} Billion VND")
+    print(f"MODEL ACCURACY     : ~{accuracy:.2f}%")
+    print(f"ESTIMATED RANGE    : {lower_bound:.3f} - {upper_bound:.3f} Billion VND")
+    print("-" * 50)
 
 if __name__ == "__main__":
     start_time = time.time()
@@ -250,7 +280,7 @@ if __name__ == "__main__":
         print("STAGE 1/3 - PRACTICE: Normalizing data and Vietnamese column names...")
         df, rename_mapping = practice_prepare(raw)
 
-        # FEATURES: bỏ year vì toàn bộ sau lọc là 2020
+        # FEATURES: exclude year because all rows are 2020 after filtering.
         FEATURES = ["area", "bed", "floor", "dist", "type"]
         available_features = [feature_name for feature_name in FEATURES if feature_name in df.columns]
 
@@ -277,6 +307,8 @@ if __name__ == "__main__":
         print(f"MAE           : {metrics['mae'] / 1e9:.3f} Bn VND")
         print(f"R2 Score      : {metrics['r2']:.4f}")
         print("-" * 65)
+        print("Sample Prediction Results on the Test Set")
+        print("-" * 65)
 
         print(f"{'No':<4} {'Actual (Bn)':>15} {'Predicted (Bn)':>18} {'Error (%)':>12}")
         for row_index in range(min(10, len(preds))):
@@ -299,3 +331,5 @@ if __name__ == "__main__":
 
         print("=" * 65)
         print(f"Total Execution Time: {time.time() - start_time:.2f}s")
+
+    predict_manual_input(model, available_features, metrics)

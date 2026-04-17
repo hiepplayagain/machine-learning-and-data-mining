@@ -1,0 +1,31 @@
+{
+  "dataset": "VN_housing_dataset.csv",
+  "year_scope": 2020,
+  "features": [
+    "area",
+    "bed",
+    "floor",
+    "dist",
+    "type"
+  ],
+  "metrics": {
+    "mape": 25.792921996876906,
+    "mae": 1677929848.2486246,
+    "r2": 0.2572684034109991
+  },
+  "rename_mapping": {
+    "Unnamed: 0": "unnamed_0",
+    "Ngày": "ngay",
+    "Địa chỉ": "ia_chi",
+    "Quận": "quan",
+    "Huyện": "huyen",
+    "Loại hình nhà ở": "loai_hinh_nha_o",
+    "Giấy tờ pháp lý": "giay_to_phap_ly",
+    "Số tầng": "so_tang",
+    "Số phòng ngủ": "so_phong_ngu",
+    "Diện tích": "dien_tich",
+    "Dài": "dai",
+    "Rộng": "rong",
+    "Giá/m2": "gia_m2"
+  }
+}
